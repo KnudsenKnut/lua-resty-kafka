@@ -1,0 +1,114 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+env:
+  KAFKA_VER: 3.6.1  # Updated from 2.4.0 - supports all API versions we need
+  SCALA_VER: 2.13   # Updated from 2.11 - Kafka 3.x uses Scala 2.13
+  OPENRESTY_VER: 1.25.3.1  # Updated from 1.19.9.1
+  RESTY_OPENSSL_VER: 0.8.8
+  JIT_UUID_VER: 0.0.7
+
+jobs:
+  run-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4  # Updated from v2
+        with:
+          submodules: recursive
+
+      - name: Install Apache Kafka
+        run: |
+          wget https://archive.apache.org/dist/kafka/$KAFKA_VER/kafka_$SCALA_VER-$KAFKA_VER.tgz
+          sudo tar -xzf kafka_$SCALA_VER-$KAFKA_VER.tgz -C /usr/local/
+          sudo mv /usr/local/kafka_$SCALA_VER-$KAFKA_VER /usr/local/kafka
+          sudo sed -i '$aauthProvider\.1=org.apache.zookeeper.server.auth.SASLAuthenticationProvider' /usr/local/kafka/config/zookeeper.properties
+          sudo sed -i '$azookeeper\.sasl\.client=true' /usr/local/kafka/config/zookeeper.properties
+          sudo sed -i '$arequireClientAuthScheme=sasl' /usr/local/kafka/config/zookeeper.properties
+          sudo sed -i '$ajaasLoginRenew=3600000' /usr/local/kafka/config/zookeeper.properties
+          sudo touch /usr/local/kafka/config/zk_server_jass.conf
+          echo -e '''Server {
+                org.apache.kafka.common.security.plain.PlainLoginModule required
+                username="admin"
+                password="admin-secret"
+                user_admin="admin-secret";};''' | sudo tee /usr/local/kafka/config/zk_server_jass.conf
+          sudo yes "" | keytool -genkeypair -keyalg RSA -dname "CN=127.0.0.1" -alias 127.0.0.1 -keystore selfsigned.jks -validity 365 -keysize 2048 -storepass changeit
+          sudo mv selfsigned.jks /usr/local/selfsigned.jks; chmod 755 /usr/local/selfsigned.jks
+          sudo sed -i '$ahost\.name=127.0.0.1' /usr/local/kafka/config/server.properties
+          sudo sed -i '$alisteners=PLAINTEXT://127.0.0.1:9092,SSL://127.0.0.1:9093,SASL_PLAINTEXT://127.0.0.1:9094' /usr/local/kafka/config/server.properties
+          sudo sed -i '$aadvertised\.listeners=PLAINTEXT://127.0.0.1:9092,SSL://127.0.0.1:9093,SASL_PLAINTEXT://127.0.0.1:9094' /usr/local/kafka/config/server.properties
+          sudo sed -i '$assl\.keystore\.location = \/usr\/local\/selfsigned.jks' /usr/local/kafka/config/server.properties
+          sudo sed -i '$assl\.keystore\.password = changeit' /usr/local/kafka/config/server.properties
+          sudo sed -i '$assl\.key\.password = changeit' /usr/local/kafka/config/server.properties
+          sudo sed -i '$assl\.key\.password = changeit' /usr/local/kafka/config/server.properties
+          sudo sed -i '$asuper\.users=User:admin' /usr/local/kafka/config/server.properties
+          sudo sed -i '$asuper\.users=User:admin' /usr/local/kafka/config/server.properties
+          sudo sed -i '$asasl\.mechanism\.inter\.broker\.protocol=PLAIN' /usr/local/kafka/config/server.properties
+          sudo sed -i '$asasl\.enabled\.mechanisms=PLAIN,SCRAM-SHA-256,SCRAM-SHA-512' /usr/local/kafka/config/server.properties
+          sudo sed -i '$aallow\.everyone\.if\.no\.acl\.found=true' /usr/local/kafka/config/server.properties
+          sudo sed -i '$aauthorizer\.class\.name=kafka.security.auth.SimpleAclAuthorizer' /usr/local/kafka/config/server.properties
+          sudo sed -i '$aauto\.create\.topics\.enable=false' /usr/local/kafka/config/server.properties
+          # Allow legacy message format for backward compatibility testing
+          sudo sed -i '$alog\.message\.format\.version=2.4' /usr/local/kafka/config/server.properties
+          sudo cat  /usr/local/kafka/config/server.properties
+
+          sudo touch /usr/local/kafka/config/kafka_server_jass.conf
+          echo -e ''' KafkaServer {
+                org.apache.kafka.common.security.scram.ScramLoginModule required
+                username="admin"
+                password="admin-secret";
+                org.apache.kafka.common.security.plain.PlainLoginModule required
+                username="admin"
+                password="admin-secret"
+                user_admin="admin-secret"; };
+              Client {
+              org.apache.kafka.common.security.plain.PlainLoginModule required
+              username="admin"
+              password="admin-secret";}; ''' | sudo tee /usr/local/kafka/config/kafka_server_jass.conf
+          sudo cat /usr/local/kafka/config/kafka_server_jass.conf
+          sudo sed  -i '$c\exec $base_dir/kafka-run-class.sh $EXTRA_ARGS -Djava.security.auth.login.config=/usr/local/kafka/config/zk_server_jass.conf org.apache.zookeeper.server.quorum.QuorumPeerMain "$@"' /usr/local/kafka/bin/zookeeper-server-start.sh
+          sudo /usr/local/kafka/bin/zookeeper-server-start.sh -daemon /usr/local/kafka/config/zookeeper.properties
+
+          sudo sed -i '$c\exec $base_dir/kafka-run-class.sh $EXTRA_ARGS -Djava.security.auth.login.config=/usr/local/kafka/config/kafka_server_jass.conf  kafka.Kafka "$@"' /usr/local/kafka/bin/kafka-server-start.sh
+          sudo /usr/local/kafka/bin/kafka-server-start.sh  -daemon /usr/local/kafka/config/server.properties
+
+          sleep 5
+          /usr/local/kafka/bin/kafka-configs.sh --zookeeper localhost:2181 --alter --add-config 'SCRAM-SHA-256=[password=admin-secret],SCRAM-SHA-512=[password=admin-secret]' --entity-type users --entity-name admin
+          /usr/local/kafka/bin/kafka-topics.sh --create --bootstrap-server localhost:9092  --replication-factor 1 --partitions 2 --topic test
+          /usr/local/kafka/bin/kafka-topics.sh --create --bootstrap-server localhost:9092  --replication-factor 1 --partitions 2 --topic test2
+          /usr/local/kafka/bin/kafka-topics.sh --create --bootstrap-server localhost:9092  --replication-factor 1 --partitions 2 --topic test3
+          /usr/local/kafka/bin/kafka-topics.sh --create --bootstrap-server localhost:9092  --replication-factor 1 --partitions 2 --topic test4
+          /usr/local/kafka/bin/kafka-topics.sh --create --bootstrap-server localhost:9092  --replication-factor 1 --partitions 2 --topic test5
+          /usr/local/kafka/bin/kafka-topics.sh --create --bootstrap-server localhost:9092  --replication-factor 1 --partitions 2 --topic test-consumer
+
+      - name: Install OpenResty
+        run: |
+          wget https://openresty.org/download/openresty-$OPENRESTY_VER.tar.gz
+          tar -xzf openresty-$OPENRESTY_VER.tar.gz
+          cd openresty-$OPENRESTY_VER
+          ./configure --prefix=/usr/local/openresty-debug --with-debug > build.log 2>&1 || (cat build.log && exit 1)
+          make -j4 > build.log 2>&1 || (cat build.log && exit 1)
+          sudo make install > build.log 2>&1 || (cat build.log && exit 1)
+          sudo apt install libtest-base-perl libtext-diff-perl libipc-run3-perl liburi-perl libwww-perl libtest-longstring-perl liblist-moreutils-perl libgd-dev > build.log 2>&1 || (cat build.log && exit 1)
+          sudo cpan Test::Nginx > build.log 2>&1 || (cat build.log && exit 1)
+          sudo mkdir -p /usr/local/{lua-resty-jit-uuid,lua-resty-openssl}
+          sudo git clone https://github.com/thibaultcha/lua-resty-jit-uuid.git /usr/local/lua-resty-jit-uuid
+          sudo git clone https://github.com/fffonion/lua-resty-openssl.git /usr/local/lua-resty-openssl
+          cd /usr/local/lua-resty-jit-uuid
+          sudo git tag
+          sudo git checkout $JIT_UUID_VER
+          sudo cp ./lib/resty/jit-uuid.lua /usr/local/openresty-debug/lualib/resty
+          cd /usr/local/lua-resty-openssl
+          sudo git tag
+          sudo git checkout $RESTY_OPENSSL_VER
+          sudo cp -r ./lib/resty/*  /usr/local/openresty-debug/lualib/resty
+
+      - name: Run Test
+        run: |
+          make test

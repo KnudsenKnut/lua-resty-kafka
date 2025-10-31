@@ -281,10 +281,28 @@ producer config, most like in <http://kafka.apache.org/documentation.html#produc
 
 * `api_version`
 
-    Specifies the produce API version. Default `0`.
-    If you use Kafka 0.10.0.0 or higher, `api_version` can use `0`, `1` or `2`.
+    Specifies the produce API version. Default `1`.
+    If you use Kafka 0.10.0.0 or higher, `api_version` can use `0`, `1`, `2`, or higher.
     If you use Kafka 0.9.x, `api_version` should be `0` or `1`.
     If you use Kafka 0.8.x, `api_version` should be `0`.
+    Modern Kafka clusters (1.0+) support API versions 3-8:
+    - Version 3+: Idempotent and transactional producer support
+    - Version 4+: Compatible with new message format (headers support)
+    - Version 5+: Includes log_start_offset in responses
+    - Version 8+: Enhanced error reporting with record-level errors
+
+    **IMPORTANT LIMITATION**: API v3+ should use RecordBatch format (magic byte 2), but this
+    library currently only supports MessageSet format (magic byte 0/1). This works with most
+    Kafka brokers through backward compatibility, but may not work with brokers configured
+    with `log.message.format.version` requiring RecordBatch format. Message headers are not
+    supported. See KAFKA_V4_UPGRADE.md for details.
+
+* `transactional_id`
+
+    Specifies the transactional ID for idempotent and transactional producers. Default `nil`.
+    Required when using `api_version` 3 or higher for transactional messaging.
+    When set, enables idempotent producer semantics (exactly-once delivery).
+    Example: `transactional_id = "my-app-transaction-id"`
 
 * `partitioner`
 

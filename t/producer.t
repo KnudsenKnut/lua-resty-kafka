@@ -402,3 +402,69 @@ GET /t
 .*offset.*
 --- no_error_log
 [error]
+
+=== TEST 11: send with API version 4
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+
+            local cjson = require "cjson"
+            local producer = require "resty.kafka.producer"
+
+            local broker_list = {
+                { host = "$TEST_NGINX_KAFKA_HOST", port = $TEST_NGINX_KAFKA_PORT },
+            }
+
+            local message = "halo world v4"
+
+            local p = producer:new(broker_list, { api_version = 4 })
+
+            local offset, err = p:send("test", nil, message)
+            if not offset then
+                ngx.say("send err:", err)
+                return
+            end
+
+            ngx.say("offset: ", tostring(offset))
+        ';
+    }
+--- request
+GET /t
+--- response_body_like
+.*offset.*
+--- no_error_log
+[error]
+
+=== TEST 12: send with API version 5
+--- http_config eval: $::HttpConfig
+--- config
+    location /t {
+        content_by_lua '
+
+            local cjson = require "cjson"
+            local producer = require "resty.kafka.producer"
+
+            local broker_list = {
+                { host = "$TEST_NGINX_KAFKA_HOST", port = $TEST_NGINX_KAFKA_PORT },
+            }
+
+            local message = "halo world v5"
+
+            local p = producer:new(broker_list, { api_version = 5 })
+
+            local offset, err = p:send("test", nil, message)
+            if not offset then
+                ngx.say("send err:", err)
+                return
+            end
+
+            ngx.say("offset: ", tostring(offset))
+        ';
+    }
+--- request
+GET /t
+--- response_body_like
+.*offset.*
+--- no_error_log
+[error]

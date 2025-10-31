@@ -27,6 +27,12 @@ local pairs = pairs
 local API_VERSION_V0 = 0
 local API_VERSION_V1 = 1
 local API_VERSION_V2 = 2
+local API_VERSION_V3 = 3
+local API_VERSION_V4 = 4
+local API_VERSION_V5 = 5
+local API_VERSION_V6 = 6
+local API_VERSION_V7 = 7
+local API_VERSION_V8 = 8
 
 local ok, new_tab = pcall(require, "table.new")
 if not ok then
@@ -64,6 +70,11 @@ local function produce_encode(self, topic_partitions)
     local req = request:new(request.ProduceRequest,
                             correlation_id(self), self.client.client_id, self.api_version)
 
+    -- API version 3+ requires transactional_id field
+    if self.api_version >= API_VERSION_V3 then
+        req:string(self.transactional_id)
+    end
+
     req:int16(self.required_acks)
     req:int32(self.request_timeout)
     req:int32(topic_partitions.topic_num)
@@ -95,24 +106,70 @@ local function produce_decode(resp)
 
         ret[topic] = {}
 
-        -- ignore ThrottleTime
         for j = 1, partition_num do
             local partition = resp:int32()
 
-            if api_version == API_VERSION_V0 or api_version == API_VERSION_V1 then
+            if api_version == API_VERSION_V0 then
                 ret[topic][partition] = {
                     errcode = resp:int16(),
                     offset = resp:int64(),
                 }
 
-            elseif api_version == API_VERSION_V2 then
+            elseif api_version == API_VERSION_V1 then
                 ret[topic][partition] = {
                     errcode = resp:int16(),
                     offset = resp:int64(),
-                    timestamp = resp:int64(), -- If CreateTime is used, this field is always -1
                 }
+
+            elseif api_version == API_VERSION_V2 or api_version == API_VERSION_V3
+                or api_version == API_VERSION_V4 then
+                ret[topic][partition] = {
+                    errcode = resp:int16(),
+                    offset = resp:int64(),
+                    log_append_time = resp:int64(), -- renamed from timestamp in v2+
+                }
+
+            elseif api_version >= API_VERSION_V5 and api_version < API_VERSION_V8 then
+                -- v5, v6, v7: Added log_start_offset
+                ret[topic][partition] = {
+                    errcode = resp:int16(),
+                    offset = resp:int64(),
+                    log_append_time = resp:int64(),
+                    log_start_offset = resp:int64(),
+                }
+
+            elseif api_version >= API_VERSION_V8 then
+                -- v8+: Added record_errors and error_message
+                local partition_ret = {
+                    errcode = resp:int16(),
+                    offset = resp:int64(),
+                    log_append_time = resp:int64(),
+                    log_start_offset = resp:int64(),
+                }
+
+                -- record_errors array
+                local record_errors_num = resp:int32()
+                if record_errors_num > 0 then
+                    partition_ret.record_errors = {}
+                    for k = 1, record_errors_num do
+                        partition_ret.record_errors[k] = {
+                            batch_index = resp:int32(),
+                            batch_index_error_message = resp:string(),
+                        }
+                    end
+                end
+
+                -- error_message (nullable string)
+                partition_ret.error_message = resp:string()
+
+                ret[topic][partition] = partition_ret
             end
         end
+    end
+
+    -- Read throttle_time_ms for API v1+ (appears after all responses)
+    if api_version >= API_VERSION_V1 then
+        ret.throttle_time_ms = resp:int32()
     end
 
     return ret
@@ -325,6 +382,22 @@ function _M.new(self, broker_list, producer_config, cluster_name)
     end
 
     local cli = client:new(broker_list, producer_config)
+    local api_version = opts.api_version or API_VERSION_V1
+
+    -- Validate API version usage
+    if api_version >= API_VERSION_V3 and api_version <= API_VERSION_V8 then
+        ngx_log(INFO, "Using ProduceRequest API v", api_version,
+                " with MessageSet format (magic byte 1). ",
+                "RecordBatch format not yet supported. ",
+                "This works with most Kafka brokers via backward compatibility.")
+    end
+
+    if api_version >= API_VERSION_V3 and not opts.transactional_id then
+        ngx_log(DEBUG, "ProduceRequest API v", api_version,
+                " supports transactional_id but none provided. ",
+                "Set transactional_id for idempotent/transactional producers.")
+    end
+
     local p = setmetatable({
         client = cli,
         correlation_id = 1,
@@ -334,7 +407,8 @@ function _M.new(self, broker_list, producer_config, cluster_name)
         required_acks = opts.required_acks or 1,
         partitioner = opts.partitioner or default_partitioner,
         error_handle = opts.error_handle,
-        api_version = opts.api_version or API_VERSION_V1,
+        api_version = api_version,
+        transactional_id = opts.transactional_id,  -- nil for non-transactional producers
         async = async,
         socket_config = cli.socket_config,
         _timer_flushing_buffer = false,

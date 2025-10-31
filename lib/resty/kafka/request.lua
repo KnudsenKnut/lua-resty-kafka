@@ -26,12 +26,24 @@ local API_VERSION_V0 = 0
 local API_VERSION_V1 = 1
 local API_VERSION_V2 = 2
 local API_VERSION_V3 = 3
+local API_VERSION_V4 = 4
+local API_VERSION_V5 = 5
+local API_VERSION_V6 = 6
+local API_VERSION_V7 = 7
+local API_VERSION_V8 = 8
+local API_VERSION_V9 = 9
 
 
 _M.API_VERSION_V0 = 0
 _M.API_VERSION_V1 = 1
 _M.API_VERSION_V2 = 2
 _M.API_VERSION_V3 = 3
+_M.API_VERSION_V4 = 4
+_M.API_VERSION_V5 = 5
+_M.API_VERSION_V6 = 6
+_M.API_VERSION_V7 = 7
+_M.API_VERSION_V8 = 8
+_M.API_VERSION_V9 = 9
 
 _M.ProduceRequest = 0
 _M.FetchRequest = 1
@@ -237,8 +249,12 @@ function _M.message_set(self, messages, index)
     local msg_set_size = 0
     local index = index or #messages
 
+    -- Select message format version
+    -- Note: API v3+ should use RecordBatch format (magic byte 2), but it's not
+    -- implemented yet. Using MESSAGE_VERSION_1 (magic byte 1) which works with
+    -- most Kafka brokers via backward compatibility.
     local message_version = MESSAGE_VERSION_0
-    if self.api_key == _M.ProduceRequest and self.api_version == API_VERSION_V2 then
+    if self.api_key == _M.ProduceRequest and self.api_version >= API_VERSION_V2 then
         message_version = MESSAGE_VERSION_1
     end
 
