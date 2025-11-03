@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    hostname: zookeeper
+    container_name: lua-resty-kafka-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "2181"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0  # Kafka 3.6.x
+    hostname: kafka
+    container_name: lua-resty-kafka-broker
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+      - "9094:9094"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,SSL:SSL,SASL_PLAINTEXT:SASL_PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,SSL://localhost:9093,SASL_PLAINTEXT://localhost:9094
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_CONFLUENT_SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+
+      # Allow legacy message format for backward compatibility
+      KAFKA_LOG_MESSAGE_FORMAT_VERSION: '2.4'
+      KAFKA_INTER_BROKER_PROTOCOL_VERSION: '2.4'
+
+      # SSL Configuration
+      KAFKA_SSL_KEYSTORE_FILENAME: kafka.keystore.jks
+      KAFKA_SSL_KEYSTORE_CREDENTIALS: kafka_keystore_credentials
+      KAFKA_SSL_KEY_CREDENTIALS: kafka_ssl_key_credentials
+      KAFKA_SSL_TRUSTSTORE_FILENAME: kafka.truststore.jks
+      KAFKA_SSL_TRUSTSTORE_CREDENTIALS: kafka_truststore_credentials
+      KAFKA_SSL_ENDPOINT_IDENTIFICATION_ALGORITHM: ""
+      KAFKA_SSL_CLIENT_AUTH: none
+
+      # SASL Configuration
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN,SCRAM-SHA-256,SCRAM-SHA-512
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_OPTS: '-Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf'
+
+      # Security
+      KAFKA_AUTHORIZER_CLASS_NAME: kafka.security.authorizer.AclAuthorizer
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: 'true'
+      KAFKA_SUPER_USERS: User:admin
+    volumes:
+      - ./docker/kafka-ssl:/etc/kafka/secrets
+      - ./docker/kafka_server_jaas.conf:/etc/kafka/kafka_server_jaas.conf
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+    command: >
+      bash -c "
+        # Generate self-signed SSL certificate if not exists
+        if [ ! -f /etc/kafka/secrets/kafka.keystore.jks ]; then
+          mkdir -p /etc/kafka/secrets
+          cd /etc/kafka/secrets
+          keytool -genkeypair -keyalg RSA -keysize 2048 -keystore kafka.keystore.jks -storepass changeit -keypass changeit -dname 'CN=localhost' -alias localhost -validity 365 -storetype JKS
+          keytool -exportcert -alias localhost -keystore kafka.keystore.jks -storepass changeit -file ca-cert.pem
+          keytool -importcert -alias localhost -file ca-cert.pem -keystore kafka.truststore.jks -storepass changeit -noprompt
+          echo 'changeit' > kafka_keystore_credentials
+          echo 'changeit' > kafka_ssl_key_credentials
+          echo 'changeit' > kafka_truststore_credentials
+        fi
+
+        # Start Kafka
+        /etc/confluent/docker/run
+      "
+
+  kafka-setup:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: lua-resty-kafka-setup
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c "
+        echo 'Waiting for Kafka to be ready...'
+        sleep 5
+
+        # Create SCRAM credentials
+        kafka-configs --zookeeper zookeeper:2181 --alter --add-config 'SCRAM-SHA-256=[password=admin-secret],SCRAM-SHA-512=[password=admin-secret]' --entity-type users --entity-name admin
+
+        # Create topics
+        kafka-topics --create --bootstrap-server kafka:9092 --replication-factor 1 --partitions 2 --topic test --if-not-exists
+        kafka-topics --create --bootstrap-server kafka:9092 --replication-factor 1 --partitions 2 --topic test2 --if-not-exists
+        kafka-topics --create --bootstrap-server kafka:9092 --replication-factor 1 --partitions 2 --topic test3 --if-not-exists
+        kafka-topics --create --bootstrap-server kafka:9092 --replication-factor 1 --partitions 2 --topic test4 --if-not-exists
+        kafka-topics --create --bootstrap-server kafka:9092 --replication-factor 1 --partitions 2 --topic test5 --if-not-exists
+        kafka-topics --create --bootstrap-server kafka:9092 --replication-factor 1 --partitions 2 --topic test-consumer --if-not-exists
+
+        echo 'Topics created successfully!'
+        kafka-topics --list --bootstrap-server kafka:9092
+      "

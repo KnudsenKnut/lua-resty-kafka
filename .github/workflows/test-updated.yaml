@@ -78,7 +78,18 @@ jobs:
           sudo sed -i '$c\exec $base_dir/kafka-run-class.sh $EXTRA_ARGS -Djava.security.auth.login.config=/usr/local/kafka/config/kafka_server_jass.conf  kafka.Kafka "$@"' /usr/local/kafka/bin/kafka-server-start.sh
           sudo /usr/local/kafka/bin/kafka-server-start.sh  -daemon /usr/local/kafka/config/server.properties
 
-          sleep 5
+          # Wait for Kafka to be ready (increased from 5 to 30 seconds)
+          echo "Waiting for Kafka to start..."
+          sleep 15
+
+          # Health check: wait up to 60 seconds for Kafka to be ready
+          timeout 60 bash -c 'until /usr/local/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 &> /dev/null; do echo "Waiting for Kafka..."; sleep 2; done' || {
+            echo "Kafka failed to start! Checking logs..."
+            sudo cat /usr/local/kafka/logs/server.log | tail -50
+            exit 1
+          }
+          echo "Kafka is ready!"
+
           /usr/local/kafka/bin/kafka-configs.sh --zookeeper localhost:2181 --alter --add-config 'SCRAM-SHA-256=[password=admin-secret],SCRAM-SHA-512=[password=admin-secret]' --entity-type users --entity-name admin
           /usr/local/kafka/bin/kafka-topics.sh --create --bootstrap-server localhost:9092  --replication-factor 1 --partitions 2 --topic test
           /usr/local/kafka/bin/kafka-topics.sh --create --bootstrap-server localhost:9092  --replication-factor 1 --partitions 2 --topic test2
